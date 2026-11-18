@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f5f6f8">
+<title>음성메모 → 메일</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --ink: #111827; --muted: #6b7280; --line: #e5e7eb;
+    --go: #16a34a; --rec: #dc2626; --warn: #b45309; --ok: #15803d; --busy: #1d4ed8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif;
+    -webkit-text-size-adjust: 100%; }
+  main { max-width: 520px; margin: 0 auto; padding: 14px 14px calc(28px + env(safe-area-inset-bottom)); }
+  header { display: flex; align-items: center; justify-content: space-between; margin: 4px 2px 12px; }
+  h1 { font-size: 19px; margin: 0; }
+  #net { font-size: 12px; color: var(--muted); }
+  #net.off { color: var(--rec); font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  label:last-child { margin-bottom: 0; }
+  input { width: 100%; font-size: 16px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+    margin-top: 4px; color: var(--ink); background: #fff; }
+  input:disabled { background: #f3f4f6; }
+  .stage { text-align: center; padding: 18px 14px 16px; }
+  #timer { font-size: 58px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 1px; line-height: 1.1; }
+  body.recording #timer { color: var(--rec); }
+  .recdot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: var(--rec);
+    margin-right: 8px; vertical-align: middle; visibility: hidden; }
+  body.recording .recdot { visibility: visible; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+  .meter { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; margin: 10px auto 10px; max-width: 280px; }
+  #level { height: 100%; background: var(--go); transform-origin: left center; transform: scaleX(0); transition: transform .08s linear; }
+  #status { min-height: 24px; font-size: 15px; color: var(--muted); }
+  #status[data-kind="rec"] { color: var(--rec); font-weight: 600; }
+  #status[data-kind="busy"] { color: var(--busy); }
+  #status[data-kind="ok"] { color: var(--ok); font-weight: 600; }
+  #status[data-kind="err"] { color: var(--rec); }
+  #status[data-kind="warn"] { color: var(--warn); }
+  #loc { font-size: 13px; color: var(--muted); margin-top: 4px; min-height: 20px; }
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .btns button { height: 104px; font-size: 30px; font-weight: 800; border: 0; border-radius: 18px; color: #fff;
+    letter-spacing: 2px; touch-action: manipulation; }
+  #startBtn { background: var(--go); }
+  #stopBtn { background: var(--rec); }
+  button { font: inherit; cursor: pointer; }
+  button:disabled { opacity: .3; cursor: default; }
+  .small { border: 1px solid var(--line); background: #fff; color: var(--ink); border-radius: 10px; padding: 8px 12px; font-size: 14px; }
+  .small.primary { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  #resText { font-family: inherit; white-space: pre-wrap; word-break: break-word; background: var(--bg); border-radius: 10px; padding: 10px;
+    font-size: 15px; max-height: 260px; overflow: auto; margin: 8px 0 0; }
+  .meta { font-size: 13px; color: var(--muted); }
+  .err { color: var(--rec); font-size: 13px; }
+  #pendList { list-style: none; margin: 8px 0; padding: 0; }
+  #pendList li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 0;
+    border-top: 1px solid var(--line); font-size: 14px; }
+  #pendList li:first-child { border-top: 0; }
+  details summary { font-weight: 600; cursor: pointer; }
+  details[open] summary { margin-bottom: 10px; }
+  #testRes { font-size: 13px; margin: 8px 0 0; white-space: pre-wrap; }
+  .hint { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>음성메모 → 메일</h1>
+    <span id="net"></span>
+  </header>
+
+  <div class="card">
+    <label>받는 메일 (여러 명은 쉼표로 구분)
+      <input id="to" type="email" multiple inputmode="email" autocomplete="email" placeholder="name@example.com">
+    </label>
+  </div>
+
+  <div class="card stage">
+    <div id="timer"><span class="recdot"></span>00:00</div>
+    <div class="meter"><div id="level"></div></div>
+    <div id="status">대기 중</div>
+    <div id="loc"></div>
+  </div>
+
+  <div class="btns">
+    <button id="startBtn" type="button">시작</button>
+    <button id="stopBtn" type="button" disabled>끝</button>
+  </div>
+
+  <section id="result" class="card" hidden>
+    <h2 id="resTitle">전송 완료</h2>
+    <div id="resMeta" class="meta"></div>
+    <div id="resErr" class="err"></div>
+    <pre id="resText"></pre>
+  </section>
+
+  <section id="pending" class="card" hidden>
+    <h2>미전송 녹음 <span id="pendCount">0</span>건</h2>
+    <p class="meta" style="margin:0">이 휴대폰에 보관 중입니다. 인터넷이 되면 다시 보내세요.</p>
+    <ul id="pendList"></ul>
+    <div class="row">
+      <button id="retryBtn" class="small primary" type="button">모두 다시 보내기</button>
+    </div>
+  </section>
+
+  <details id="settings" class="card">
+    <summary>설정</summary>
+    <label>Apps Script 웹앱 URL
+      <input id="url" type="url" inputmode="url" autocomplete="off" placeholder="https://script.google.com/macros/s/…/exec">
+    </label>
+    <label>앱 비밀번호 (스크립트 속성 APP_KEY)
+      <input id="key" type="password" autocomplete="off">
+    </label>
+    <div class="row">
+      <button id="saveSettings" class="small primary" type="button">저장</button>
+      <button id="testBtn" class="small" type="button">연결 테스트</button>
+    </div>
+    <p id="testRes"></p>
+    <p class="hint">설정값은 이 휴대폰 브라우저에만 저장됩니다. 녹음은 최대 30분이며, 녹음 중에는 화면을 켜 둔 채 이 화면을 유지하세요.</p>
+  </details>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  // Apps Script 웹앱 URL을 여기에 넣어 두면 각 휴대폰에서 URL 입력을 생략할 수 있습니다(비밀번호는 별도 입력).
+  const DEFAULT_SCRIPT_URL = '';
+  const MAX_MINUTES = 30;
+  const AUDIO_BPS = 48000;
+  const SEND_TIMEOUT_MS = 5 * 60 * 1000;
+
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get(k, d = '') { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 저장 불가 환경 */ } }
+  };
+  const sleep = (ms, v) => new Promise((r) => setTimeout(() => r(v), ms));
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const mmss = (sec) => pad2(Math.floor(sec / 60)) + ':' + pad2(sec % 60);
+  const scriptUrl = () => (store.get('scriptUrl') || DEFAULT_SCRIPT_URL).trim();
+
+  let rec = null;        // 진행 중인 녹음 세션
+  let busy = false;      // 전송 진행 중 여부
+
+  /* ───────── 표시 ───────── */
+
+  function setStatus(msg, kind = '') {
+    const el = $('status');
+    el.textContent = msg;
+    el.dataset.kind = kind;
+  }
+  function setTimer(sec) {
+    $('timer').innerHTML = '<span class="recdot"></span>' + mmss(sec);
+  }
+  function showLoc(p, prefix = '위치') {
+    if (!p) { $('loc').textContent = ''; return; }
+    $('loc').textContent = p.error
+      ? prefix + ': ' + p.error
+      : prefix + ': ' + p.lat.toFixed(5) + ', ' + p.lng.toFixed(5) + ' (±' + p.acc + 'm)';
+  }
+  function updateNet() {
+    const on = navigator.onLine;
+    $('net').textContent = on ? '온라인' : '오프라인';
+    $('net').className = on ? '' : 'off';
+  }
+
+  /* ───────── 메일 주소 ───────── */
+
+  const parseEmails = (s) => String(s || '').split(/[,;\s]+/).filter(Boolean);
+  function validEmails(s) {
+    const a = parseEmails(s);
+    return a.length > 0 && a.length <= 5 && a.every((x) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x));
+  }
+
+  /* ───────── 녹음 형식 ───────── */
+
+  function pickMime() {
+    if (!window.MediaRecorder) return null;
+    const ua = navigator.userAgent;
+    const apple = /iPhone|iPad|iPod/.test(ua) || (/Safari/.test(ua) && !/Chrome|Chromium|CriOS|Edg|Android/.test(ua));
+    const list = apple
+      ? ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']
+      : ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+    for (const t of list) {
+      try { if (MediaRecorder.isTypeSupported(t)) return t; } catch (e) { /* 무시 */ }
+    }
+    return '';
+  }
+  function extOf(mime) {
+    const m = String(mime || '').split(';')[0];
+    return ({ 'audio/webm': 'webm', 'audio/mp4': 'm4a', 'audio/ogg': 'ogg', 'audio/aac': 'aac', 'audio/mpeg': 'mp3', 'audio/wav': 'wav' })[m] || 'webm';
+  }
+
+  /* ───────── 위치 ───────── */
+
+  const geoErr = (e) => ({ 1: '위치 권한 거부', 2: '위치 확인 불가', 3: '위치 확인 시간 초과' })[e && e.code] || '위치 오류';
+  const toPos = (p) => ({
+    lat: p.coords.latitude, lng: p.coords.longitude,
+    acc: Math.round(p.coords.accuracy), time: p.timestamp || Date.now()
+  });
+  function getPos(timeout) {
+    return new Promise((resolve) => {
+      if (!('geolocation' in navigator)) return resolve({ error: '위치 기능 미지원 브라우저' });
+      navigator.geolocation.getCurrentPosition(
+        (p) => resolve(toPos(p)),
+        (e) => resolve({ error: geoErr(e) }),
+        { enableHighAccuracy: true, timeout, maximumAge: 15000 });
+    });
+  }
+
+  /* ───────── 화면 꺼짐 방지 ───────── */
+
+  async function keepAwake(s) {
+    try {
+      if ('wakeLock' in navigator && s && !s.stoppedFlag) s.wake = await navigator.wakeLock.request('screen');
+    } catch (e) { /* 미지원 또는 거부 */ }
+  }
+  function releaseWake(s) { try { if (s.wake) s.wake.release(); } catch (e) { /* 무시 */ } s.wake = null; }
+
+  /* ───────── 입력 레벨 표시 ───────── */
+
+  function startMeter(s) {
+    try {
+      if (!s.ctx) return;
+      const src = s.ctx.createMediaStreamSource(s.stream);
+      const an = s.ctx.createAnalyser();
+      an.fftSize = 512;
+      src.connect(an);
+      const buf = new Uint8Array(an.fftSize);
+      const bar = $('level');
+      const loop = () => {
+        an.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) { const x = (buf[i] - 128) / 128; sum += x * x; }
+        bar.style.transform = 'scaleX(' + Math.min(1, Math.sqrt(sum / buf.length) * 5).toFixed(3) + ')';
+        s.raf = requestAnimationFrame(loop);
+      };
+      if (s.ctx.state === 'suspended' && s.ctx.resume) s.ctx.resume().catch(() => {});
+      loop();
+    } catch (e) { /* 레벨 표시는 부가 기능 */ }
+  }
+  function stopMeter(s) {
+    try { if (s.raf) cancelAnimationFrame(s.raf); } catch (e) { /* 무시 */ }
+    try { if (s.ctx) s.ctx.close(); } catch (e) { /* 무시 */ }
+    $('level').style.transform = 'scaleX(0)';
+  }
+
+  /* ───────── 녹음 시작 ───────── */
+
+  async function start() {
+    if (rec) return;
+    const to = $('to').value.trim();
+    if (!validEmails(to)) { alert('받는 메일 주소를 확인해 주세요. (최대 5명, 쉼표로 구분)'); $('to').focus(); return; }
+    store.set('to', to);
+    if (!scriptUrl() || !store.get('appKey')) { openSettings('먼저 설정에서 Apps Script URL과 앱 비밀번호를 저장해 주세요.'); return; }
+    if (!window.isSecureContext) { alert('https 주소에서만 녹음·위치 기능이 동작합니다.'); return; }
+    const mime = pickMime();
+    if (mime === null || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('이 브라우저는 녹음을 지원하지 않습니다. Chrome 또는 Safari 최신 버전을 사용해 주세요.');
+      return;
+    }
+
+    $('startBtn').disabled = true;
+    $('to').disabled = true;
+    setStatus('마이크 연결 중…');
+
+    // 사용자 터치 직후에 만들어야 iPhone에서 레벨 표시가 동작
+    let ctx = null;
+    try { const AC = window.AudioContext || window.webkitAudioContext; if (AC) ctx = new AC(); } catch (e) { ctx = null; }
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      });
+    } catch (e) {
+      try { if (ctx) ctx.close(); } catch (x) { /* 무시 */ }
+      $('startBtn').disabled = false;
+      $('to').disabled = false;
+      setStatus(e && e.name === 'NotAllowedError'
+        ? '마이크 권한이 거부되었습니다. 브라우저 설정에서 마이크를 허용해 주세요.'
+        : '마이크를 열 수 없습니다: ' + ((e && e.message) || e), 'err');
+      return;
+    }
+
+    let recorder;
+    try {
+      const opts = { audioBitsPerSecond: AUDIO_BPS };
+      if (mime) opts.mimeType = mime;
+      recorder = new MediaRecorder(stream, opts);
+    } catch (e) {
+      recorder = new MediaRecorder(stream);
+    }
+
+    const s = {
+      stream, recorder, ctx, chunks: [], to,
+      startedAt: Date.now(), bg: 0, lastPos: null, firstWatch: null, watchId: null,
+      autoStopped: false, stoppedFlag: false
+    };
+    rec = s;
+
+    recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size) s.chunks.push(ev.data); };
+    s.stopped = new Promise((r) => { recorder.onstop = r; });
+    recorder.onerror = (ev) => { s.recError = (ev && ev.error && ev.error.message) || '녹음 오류'; };
+    recorder.start();
+
+    // 위치: 시작 시점 1회 + 녹음 중 추적
+    showLoc({ error: '확인 중…' });
+    s.startPosP = getPos(20000).then((p) => { if (rec === s) showLoc(p); return p; });
+    if ('geolocation' in navigator) {
+      s.watchId = navigator.geolocation.watchPosition((p) => {
+        const v = toPos(p);
+        s.lastPos = v;
+        if (!s.firstWatch) s.firstWatch = v;
+        if (rec === s) showLoc(v);
+      }, () => { /* 시작 위치 쪽에서 오류 표시 */ }, { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
+    }
+
+    keepAwake(s);
+    startMeter(s);
+    s.timerId = setInterval(() => tick(s), 500);
+    tick(s);
+
+    document.body.classList.add('recording');
+    $('stopBtn').disabled = false;
+    setStatus('녹음 중 — 화면을 켜 둔 채로 말씀하세요', 'rec');
+  }
+
+  function tick(s) {
+    if (rec !== s) return;
+    const sec = Math.floor((Date.now() - s.startedAt) / 1000);
+    setTimer(sec);
+    if (sec >= MAX_MINUTES * 60) { s.autoStopped = true; stop(); return; }
+    if (sec >= (MAX_MINUTES - 1) * 60 && !s.warnedMax) {
+      s.warnedMax = true;
+      setStatus('1분 뒤 자동 종료됩니다 (최대 ' + MAX_MINUTES + '분)', 'warn');
+    }
+  }
+
+  /* ───────── 녹음 종료 → 보관 → 전송 ───────── */
+
+  async function stop() {
+    const s = rec;
+    if (!s || s.stoppedFlag) return;
+    s.stoppedFlag = true;
+    $('stopBtn').disabled = true;
+    clearInterval(s.timerId);
+    setStatus('녹음 마무리 중…');
+
+    try { if (s.recorder.state !== 'inactive') s.recorder.stop(); } catch (e) { /* 이미 정지 */ }
+    await Promise.race([s.stopped, sleep(5000)]);
+    const endedAt = Date.now();
+    s.stream.getTracks().forEach((t) => t.stop());
+    stopMeter(s);
+    releaseWake(s);
+
+    setStatus('위치 확인 중…');
+    let startPos = await Promise.race([s.startPosP, sleep(2500, null)]);
+    if (!startPos || startPos.error) startPos = s.firstWatch || startPos || { error: '위치 확인 시간 초과' };
+    let endPos = (s.lastPos && endedAt - s.lastPos.time < 60000) ? s.lastPos : await getPos(8000);
+    if (endPos.error && s.lastPos) endPos = s.lastPos;
+    if (s.watchId != null) { try { navigator.geolocation.clearWatch(s.watchId); } catch (e) { /* 무시 */ } }
+
+    rec = null;
+    document.body.classList.remove('recording');
+    $('startBtn').disabled = false;
+    $('to').disabled = false;
+
+    const mime = s.recorder.mimeType || (s.chunks[0] && s.chunks[0].type) || 'audio/webm';
+    const blob = new Blob(s.chunks, { type: mime });
+    if (!blob.size) {
+      setStatus('녹음된 데이터가 없습니다' + (s.recError ? ' (' + s.recError + ')' : '') + '. 다시 시도해 주세요.', 'err');
+      return;
+    }
+
+    const warnings = [];
+    if (s.bg) warnings.push('녹음 중 화면 전환·꺼짐이 ' + s.bg + '회 있었습니다. 해당 구간은 녹음되지 않았을 수 있습니다.');
+    if (s.autoStopped) warnings.push('최대 녹음 시간(' + MAX_MINUTES + '분)에 도달해 자동 종료되었습니다.');
+
+    const item = {
+      id: s.startedAt, blob, mime,
+      meta: {
+        to: s.to, startedAt: s.startedAt, endedAt,
+        durationSec: Math.round((endedAt - s.startedAt) / 1000),
+        startPos, endPos, warnings
+      }
+    };
+    await pendingPut(item);   // 전송 전에 먼저 휴대폰에 보관
+    await refreshPending();
+    await sendItem(item);
+  }
+
+  /* ───────── 서버 통신 ───────── */
+
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
+      fr.onerror = () => reject(fr.error || new Error('파일 읽기 실패'));
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  async function callServer(bodyObj, timeoutMs) {
+    const url = scriptUrl();
+    const key = store.get('appKey');
+    if (!url || !key) throw new Error('설정(URL·비밀번호)이 비어 있습니다');
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },   // CORS 사전요청을 피하기 위해 text/plain 사용
+        body: JSON.stringify(Object.assign({ key }, bodyObj)),
+        redirect: 'follow',
+        signal: ctrl.signal
+      });
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw new Error('응답 시간 초과');
+      throw new Error(navigator.onLine ? '서버 연결 실패 (URL·배포 상태 확인)' : '인터넷 연결 없음');
+    } finally {
+      clearTimeout(timer);
+    }
+    const text = await res.text();
+    try { return JSON.parse(text); }
+    catch (e) { throw new Error('서버 응답 형식 오류 — 배포 시 액세스 권한을 "모든 사용자"로 했는지 확인'); }
+  }
+
+  async function sendItem(item) {
+    busy = true;
+    if (!rec) setStatus('전송 중… 텍스트 변환·메일 발송까지 1~2분 걸릴 수 있습니다', 'busy');
+    try {
+      const audio = await blobToBase64(item.blob);
+      const data = await callServer(Object.assign({ action: 'memo', mimeType: item.mime, audio }, item.meta), SEND_TIMEOUT_MS);
+      if (!data.ok) throw new Error(data.error || '서버 오류');
+      if (data.audioAttached !== false) {
+        await pendingDel(item.id);
+      } else {
+        item.sentNoAudio = true;   // 메일은 갔지만 음성 파일이 커서 첨부 못 함 → 파일 저장용으로만 보관
+        await pendingPut(item);
+      }
+      showResult(item, data);
+      if (!rec) setStatus('전송 완료 ✓', 'ok');
+      return true;
+    } catch (e) {
+      if (!rec) setStatus('전송 실패: ' + e.message + ' — 녹음은 휴대폰에 보관되어 있습니다', 'err');
+      return false;
+    } finally {
+      busy = false;
+      await refreshPending();
+    }
+  }
+
+  function showResult(item, d) {
+    $('result').hidden = false;
+    const t = new Date(item.meta.startedAt);
+    $('resTitle').textContent = '전송 완료 · ' + pad2(t.getHours()) + ':' + pad2(t.getMinutes()) + ' 녹음';
+    const lines = ['받는 사람: ' + [].concat(d.to || item.meta.to).join(', ')];
+    if (d.address) lines.push('위치: ' + d.address);
+    else if (item.meta.startPos && item.meta.startPos.error) lines.push('위치: 없음 (' + item.meta.startPos.error + ')');
+    if (d.model) lines.push('변환: Gemini (' + d.model + ')');
+    $('resMeta').textContent = lines.join('\n');
+    $('resMeta').style.whiteSpace = 'pre-line';
+    $('resErr').textContent = [d.sttError, ...(item.meta.warnings || [])].filter(Boolean).join('\n');
+    $('resErr').style.whiteSpace = 'pre-line';
+    $('resText').textContent = d.transcript || '(텍스트 변환 결과 없음)';
+  }
+
+  /* ───────── 미전송 보관 (IndexedDB, 실패 시 메모리) ───────── */
+
+  const mem = new Map();
+  let dbp = null;
+  function db() {
+    if (!dbp) {
+      dbp = new Promise((resolve, reject) => {
+        if (!window.indexedDB) return reject(new Error('IndexedDB 미지원'));
+        const r = indexedDB.open('voiceMemo', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('pending', { keyPath: 'id' });
+        r.onsuccess = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+      });
+      dbp.catch(() => {});
+    }
+    return dbp;
+  }
+  async function idb(mode, op) {
+    const d = await db();
+    return new Promise((resolve, reject) => {
+      const t = d.transaction('pending', mode);
+      const req = op(t.objectStore('pending'));
+      t.oncomplete = () => resolve(req.result);
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error);
+    });
+  }
+  async function pendingPut(item) {
+    mem.set(item.id, item);
+    try { await idb('readwrite', (st) => st.put(item)); } catch (e) { console.warn('보관 실패(메모리 유지):', e); }
+  }
+  async function pendingDel(id) {
+    mem.delete(id);
+    try { await idb('readwrite', (st) => st.delete(id)); } catch (e) { /* 무시 */ }
+  }
+  async function pendingAll() {
+    const byId = new Map();
+    try { (await idb('readonly', (st) => st.getAll())).forEach((x) => byId.set(x.id, x)); } catch (e) { /* 무시 */ }
+    mem.forEach((x, id) => byId.set(id, x));
+    return [...byId.values()].sort((a, b) => a.id - b.id);
+  }
+
+  function fileName(item) {
+    const d = new Date(item.id);
+    return 'voice_' + d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()) + '_' +
+      pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds()) + '.' + extOf(item.mime);
+  }
+  function download(item) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(item.blob);
+    a.download = fileName(item);
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 3000);
+  }
+
+  async function refreshPending() {
+    const items = await pendingAll();
+    $('pending').hidden = items.length === 0;
+    $('pendCount').textContent = items.length;
+    const ul = $('pendList');
+    ul.innerHTML = '';
+    items.forEach((it) => {
+      const li = document.createElement('li');
+      const d = new Date(it.id);
+      const label = document.createElement('span');
+      label.textContent = (d.getMonth() + 1) + '/' + d.getDate() + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) +
+        ' · ' + mmss(it.meta.durationSec || 0) + ' · ' + (it.blob.size / 1048576).toFixed(1) + 'MB' +
+        (it.sentNoAudio ? ' · 메일 발송됨(파일 미첨부)' : '');
+      const box = document.createElement('span');
+      box.className = 'row';
+      const save = document.createElement('button');
+      save.className = 'small'; save.type = 'button'; save.textContent = '파일 저장';
+      save.onclick = () => download(it);
+      const del = document.createElement('button');
+      del.className = 'small'; del.type = 'button'; del.textContent = '삭제';
+      del.onclick = async () => {
+        if (confirm('이 녹음을 휴대폰에서 삭제할까요? (메일로 보내지 않은 상태입니다)')) { await pendingDel(it.id); refreshPending(); }
+      };
+      box.append(save, del);
+      li.append(label, box);
+      ul.append(li);
+    });
+    $('retryBtn').disabled = busy || !items.some((it) => !it.sentNoAudio);
+  }
+
+  async function retryAll() {
+    if (busy) return;
+    const items = await pendingAll();
+    for (const it of items) {
+      if (it.sentNoAudio) continue;
+      const ok = await sendItem(it);
+      if (!ok) break;
+    }
+  }
+
+  /* ───────── 설정 ───────── */
+
+  function openSettings(msg) {
+    $('settings').open = true;
+    $('testRes').textContent = msg || '';
+    $('settings').scrollIntoView({ behavior: 'smooth' });
+  }
+  function saveSettings() {
+    const url = $('url').value.trim();
+    const key = $('key').value;
+    if (url && !/^https:\/\/script\.google\.com\/.+\/exec$/.test(url)) {
+      $('testRes').textContent = 'URL 형식 확인: https://script.google.com/…/exec 형태여야 합니다.';
+      return false;
+    }
+    store.set('scriptUrl', url);
+    store.set('appKey', key);
+    $('testRes').textContent = '저장했습니다.';
+    return true;
+  }
+  async function testConnection() {
+    if (!saveSettings()) return;
+    $('testRes').textContent = '연결 확인 중…';
+    try {
+      const d = await callServer({ action: 'ping' }, 30000);
+      $('testRes').textContent = d.ok
+        ? '연결 OK\n텍스트 변환: ' + (d.stt ? '사용' : '미설정(GEMINI_API_KEY 없음)') + '\n오늘 남은 메일 발송 한도: ' + d.mailQuota
+        : '실패: ' + d.error;
+      if (d.ok) setStatus('설정 완료 — 받는 메일을 확인하고 시작을 누르세요', 'ok');
+    } catch (e) {
+      $('testRes').textContent = '실패: ' + e.message;
+    }
+  }
+
+  /* ───────── 이벤트 ───────── */
+
+  $('startBtn').addEventListener('click', start);
+  $('stopBtn').addEventListener('click', stop);
+  $('retryBtn').addEventListener('click', retryAll);
+  $('saveSettings').addEventListener('click', saveSettings);
+  $('testBtn').addEventListener('click', testConnection);
+  $('to').addEventListener('change', () => store.set('to', $('to').value.trim()));
+
+  document.addEventListener('visibilitychange', () => {
+    if (!rec) return;
+    if (document.visibilityState === 'hidden') {
+      rec.bg++;
+    } else {
+      keepAwake(rec);
+      setStatus('녹음 중 — 화면 전환이 감지되어 일부 구간이 빠졌을 수 있습니다', 'warn');
+    }
+  });
+  window.addEventListener('beforeunload', (e) => {
+    if (rec) { e.preventDefault(); e.returnValue = ''; }
+  });
+  window.addEventListener('online', () => { updateNet(); if (!rec) retryAll(); });
+  window.addEventListener('offline', updateNet);
+
+  /* ───────── 초기화 ───────── */
+
+  $('to').value = store.get('to');
+  $('url').value = scriptUrl();
+  $('key').value = store.get('appKey');
+  updateNet();
+  setTimer(0);
+  if (!scriptUrl() || !store.get('appKey')) openSettings('처음 사용 시 Apps Script URL과 앱 비밀번호를 저장해 주세요.');
+  refreshPending();
+})();
+</script>
+</body>
+</html>
