@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#f5f6f8">
-<title>음성메모 → 메일</title>
+<title>음성메모 → 드라이브</title>
 <style>
   :root {
     --bg: #f5f6f8; --card: #fff; --ink: #111827; --muted: #6b7280; --line: #e5e7eb;
@@ -69,15 +69,9 @@
 <body>
 <main>
   <header>
-    <h1>음성메모 → 메일</h1>
+    <h1>음성메모 → 드라이브</h1>
     <span id="net"></span>
   </header>
-
-  <div class="card">
-    <label>받는 메일 (여러 명은 쉼표로 구분)
-      <input id="to" type="email" multiple inputmode="email" autocomplete="email" placeholder="name@example.com">
-    </label>
-  </div>
 
   <div class="card stage">
     <div id="timer"><span class="recdot"></span>00:00</div>
@@ -92,8 +86,9 @@
   </div>
 
   <section id="result" class="card" hidden>
-    <h2 id="resTitle">전송 완료</h2>
+    <h2 id="resTitle">저장 완료</h2>
     <div id="resMeta" class="meta"></div>
+    <div id="resLinks" class="row" style="margin-top:8px"></div>
     <div id="resErr" class="err"></div>
     <pre id="resText"></pre>
   </section>
@@ -167,14 +162,6 @@
     const on = navigator.onLine;
     $('net').textContent = on ? '온라인' : '오프라인';
     $('net').className = on ? '' : 'off';
-  }
-
-  /* ───────── 메일 주소 ───────── */
-
-  const parseEmails = (s) => String(s || '').split(/[,;\s]+/).filter(Boolean);
-  function validEmails(s) {
-    const a = parseEmails(s);
-    return a.length > 0 && a.length <= 5 && a.every((x) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x));
   }
 
   /* ───────── 녹음 형식 ───────── */
@@ -254,9 +241,6 @@
 
   async function start() {
     if (rec) return;
-    const to = $('to').value.trim();
-    if (!validEmails(to)) { alert('받는 메일 주소를 확인해 주세요. (최대 5명, 쉼표로 구분)'); $('to').focus(); return; }
-    store.set('to', to);
     if (!scriptUrl() || !store.get('appKey')) { openSettings('먼저 설정에서 Apps Script URL과 앱 비밀번호를 저장해 주세요.'); return; }
     if (!window.isSecureContext) { alert('https 주소에서만 녹음·위치 기능이 동작합니다.'); return; }
     const mime = pickMime();
@@ -266,7 +250,6 @@
     }
 
     $('startBtn').disabled = true;
-    $('to').disabled = true;
     setStatus('마이크 연결 중…');
 
     // 사용자 터치 직후에 만들어야 iPhone에서 레벨 표시가 동작
@@ -281,7 +264,6 @@
     } catch (e) {
       try { if (ctx) ctx.close(); } catch (x) { /* 무시 */ }
       $('startBtn').disabled = false;
-      $('to').disabled = false;
       setStatus(e && e.name === 'NotAllowedError'
         ? '마이크 권한이 거부되었습니다. 브라우저 설정에서 마이크를 허용해 주세요.'
         : '마이크를 열 수 없습니다: ' + ((e && e.message) || e), 'err');
@@ -298,7 +280,7 @@
     }
 
     const s = {
-      stream, recorder, ctx, chunks: [], to,
+      stream, recorder, ctx, chunks: [],
       startedAt: Date.now(), bg: 0, lastPos: null, firstWatch: null, watchId: null,
       autoStopped: false, stoppedFlag: false
     };
@@ -369,7 +351,6 @@
     rec = null;
     document.body.classList.remove('recording');
     $('startBtn').disabled = false;
-    $('to').disabled = false;
 
     const mime = s.recorder.mimeType || (s.chunks[0] && s.chunks[0].type) || 'audio/webm';
     const blob = new Blob(s.chunks, { type: mime });
@@ -385,7 +366,8 @@
     const item = {
       id: s.startedAt, blob, mime,
       meta: {
-        to: s.to, startedAt: s.startedAt, endedAt,
+        memoId: newMemoId(s.startedAt),
+        startedAt: s.startedAt, endedAt,
         durationSec: Math.round((endedAt - s.startedAt) / 1000),
         startPos, endPos, warnings
       }
@@ -422,8 +404,10 @@
         signal: ctrl.signal
       });
     } catch (e) {
-      if (e && e.name === 'AbortError') throw new Error('응답 시간 초과');
-      throw new Error(navigator.onLine ? '서버 연결 실패 (URL·배포 상태 확인)' : '인터넷 연결 없음');
+      const err = new Error(e && e.name === 'AbortError' ? '응답 시간 초과'
+        : (navigator.onLine ? '서버 연결 실패 (URL·배포 상태 확인)' : '인터넷 연결 없음'));
+      err.network = true;   // 응답을 못 받은 경우(서버는 처리했을 수 있음)
+      throw err;
     } finally {
       clearTimeout(timer);
     }
@@ -432,21 +416,51 @@
     catch (e) { throw new Error('서버 응답 형식 오류 — 배포 시 액세스 권한을 "모든 사용자"로 했는지 확인'); }
   }
 
+  const newMemoId = (id) => id + '-' + Math.random().toString(36).slice(2, 10);
+
+  // 응답이 끊겼을 때 서버에 처리 결과를 다시 묻는다 (iPhone은 약 1분 넘는 요청을 끊는 사례가 있음)
+  async function waitForResult(memoId, maxMs = 4 * 60 * 1000) {
+    const t0 = Date.now();
+    let noneCount = 0, failCount = 0;
+    while (Date.now() - t0 < maxMs) {
+      if (!navigator.onLine) return null;
+      if (!rec) setStatus('서버 처리 결과 확인 중… (' + Math.round((Date.now() - t0) / 1000) + '초)', 'busy');
+      try {
+        const d = await callServer({ action: 'status', memoId }, 20000);
+        failCount = 0;
+        if (!d.ok) return d;                                     // 비밀번호 오류 등
+        if (d.state === 'done') return d;                        // 처리 완료(엑셀 기록됨)
+        if (d.state === 'none' && ++noneCount >= 3) return null; // 서버가 요청을 받지 못함
+      } catch (e) {
+        if (++failCount >= 3) return null;                       // 서버에 계속 연결 안 됨
+      }
+      await sleep(6000);
+    }
+    return null;
+  }
+
   async function sendItem(item) {
     busy = true;
-    if (!rec) setStatus('전송 중… 텍스트 변환·메일 발송까지 1~2분 걸릴 수 있습니다', 'busy');
+    if (!item.meta.memoId) { item.meta.memoId = newMemoId(item.id); await pendingPut(item); }
+    if (!rec) setStatus('전송 중… 텍스트 변환·드라이브 저장까지 1~2분 걸릴 수 있습니다', 'busy');
     try {
       const audio = await blobToBase64(item.blob);
-      const data = await callServer(Object.assign({ action: 'memo', mimeType: item.mime, audio }, item.meta), SEND_TIMEOUT_MS);
-      if (!data.ok) throw new Error(data.error || '서버 오류');
-      if (data.audioAttached !== false) {
-        await pendingDel(item.id);
-      } else {
-        item.sentNoAudio = true;   // 메일은 갔지만 음성 파일이 커서 첨부 못 함 → 파일 저장용으로만 보관
-        await pendingPut(item);
+      let data;
+      try {
+        data = await callServer(Object.assign({ action: 'memo', mimeType: item.mime, audio }, item.meta), SEND_TIMEOUT_MS);
+      } catch (e) {
+        if (!e.network) throw e;
+        data = await waitForResult(item.meta.memoId);
+        if (!data) throw e;
       }
+      if (data.ok && data.state === 'processing') {   // 같은 녹음을 서버가 아직 처리 중
+        data = await waitForResult(item.meta.memoId);
+        if (!data) throw new Error('서버 처리 결과를 확인하지 못했습니다 — 드라이브 엑셀에 기록됐는지 확인하세요');
+      }
+      if (!data.ok) throw new Error(data.error || '서버 오류');
+      await pendingDel(item.id);
       showResult(item, data);
-      if (!rec) setStatus('전송 완료 ✓', 'ok');
+      if (!rec) setStatus('드라이브 저장 완료 ✓', 'ok');
       return true;
     } catch (e) {
       if (!rec) setStatus('전송 실패: ' + e.message + ' — 녹음은 휴대폰에 보관되어 있습니다', 'err');
@@ -460,8 +474,9 @@
   function showResult(item, d) {
     $('result').hidden = false;
     const t = new Date(item.meta.startedAt);
-    $('resTitle').textContent = '전송 완료 · ' + pad2(t.getHours()) + ':' + pad2(t.getMinutes()) + ' 녹음';
-    const lines = ['받는 사람: ' + [].concat(d.to || item.meta.to).join(', ')];
+    $('resTitle').textContent = '저장 완료 · ' + pad2(t.getHours()) + ':' + pad2(t.getMinutes()) + ' 녹음';
+    const lines = [];
+    if (d.xlsxName) lines.push('엑셀: ' + d.xlsxName + ' · ' + d.row + '번째 줄');
     if (d.address) lines.push('위치: ' + d.address);
     else if (item.meta.startPos && item.meta.startPos.error) lines.push('위치: 없음 (' + item.meta.startPos.error + ')');
     if (d.model) lines.push('변환: Gemini (' + d.model + ')');
@@ -470,6 +485,15 @@
     $('resErr').textContent = [d.sttError, ...(item.meta.warnings || [])].filter(Boolean).join('\n');
     $('resErr').style.whiteSpace = 'pre-line';
     $('resText').textContent = d.transcript || '(텍스트 변환 결과 없음)';
+    const box = $('resLinks');
+    box.innerHTML = '';
+    [['엑셀 열기', d.xlsxUrl], ['음성 파일', d.audioUrl], ['날짜 폴더', d.folderUrl]].forEach(([label, url]) => {
+      if (!url) return;
+      const a = document.createElement('a');
+      a.className = 'small'; a.textContent = label; a.href = url; a.target = '_blank'; a.rel = 'noopener';
+      a.style.textDecoration = 'none';
+      box.append(a);
+    });
   }
 
   /* ───────── 미전송 보관 (IndexedDB, 실패 시 메모리) ───────── */
@@ -539,8 +563,7 @@
       const d = new Date(it.id);
       const label = document.createElement('span');
       label.textContent = (d.getMonth() + 1) + '/' + d.getDate() + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) +
-        ' · ' + mmss(it.meta.durationSec || 0) + ' · ' + (it.blob.size / 1048576).toFixed(1) + 'MB' +
-        (it.sentNoAudio ? ' · 메일 발송됨(파일 미첨부)' : '');
+        ' · ' + mmss(it.meta.durationSec || 0) + ' · ' + (it.blob.size / 1048576).toFixed(1) + 'MB';
       const box = document.createElement('span');
       box.className = 'row';
       const save = document.createElement('button');
@@ -549,20 +572,19 @@
       const del = document.createElement('button');
       del.className = 'small'; del.type = 'button'; del.textContent = '삭제';
       del.onclick = async () => {
-        if (confirm('이 녹음을 휴대폰에서 삭제할까요? (메일로 보내지 않은 상태입니다)')) { await pendingDel(it.id); refreshPending(); }
+        if (confirm('이 녹음을 휴대폰에서 삭제할까요? (드라이브에 저장되지 않은 상태입니다)')) { await pendingDel(it.id); refreshPending(); }
       };
       box.append(save, del);
       li.append(label, box);
       ul.append(li);
     });
-    $('retryBtn').disabled = busy || !items.some((it) => !it.sentNoAudio);
+    $('retryBtn').disabled = busy || items.length === 0;
   }
 
   async function retryAll() {
     if (busy) return;
     const items = await pendingAll();
     for (const it of items) {
-      if (it.sentNoAudio) continue;
       const ok = await sendItem(it);
       if (!ok) break;
     }
@@ -593,9 +615,10 @@
     try {
       const d = await callServer({ action: 'ping' }, 30000);
       $('testRes').textContent = d.ok
-        ? '연결 OK\n텍스트 변환: ' + (d.stt ? '사용' : '미설정(GEMINI_API_KEY 없음)') + '\n오늘 남은 메일 발송 한도: ' + d.mailQuota
+        ? '연결 OK\n텍스트 변환: ' + (d.stt ? '사용' : '미설정(GEMINI_API_KEY 없음)') +
+          '\n저장: ' + (d.drive ? '드라이브 ' + d.folder + ' 폴더' : '불가 — Apps Script에 Drive API 서비스 추가 필요')
         : '실패: ' + d.error;
-      if (d.ok) setStatus('설정 완료 — 받는 메일을 확인하고 시작을 누르세요', 'ok');
+      if (d.ok && d.drive) setStatus('설정 완료 — 시작을 누르세요', 'ok');
     } catch (e) {
       $('testRes').textContent = '실패: ' + e.message;
     }
@@ -608,7 +631,6 @@
   $('retryBtn').addEventListener('click', retryAll);
   $('saveSettings').addEventListener('click', saveSettings);
   $('testBtn').addEventListener('click', testConnection);
-  $('to').addEventListener('change', () => store.set('to', $('to').value.trim()));
 
   document.addEventListener('visibilitychange', () => {
     if (!rec) return;
@@ -627,7 +649,6 @@
 
   /* ───────── 초기화 ───────── */
 
-  $('to').value = store.get('to');
   $('url').value = scriptUrl();
   $('key').value = store.get('appKey');
   updateNet();
