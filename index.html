@@ -123,6 +123,55 @@
 (() => {
   'use strict';
 
+  // 엑셀의 "네이버지도" 링크로 열린 경우: 녹음 화면 대신 네이버 지도 앱을 연다
+  const qp = new URLSearchParams(location.search);
+  if (qp.get('map') === 'naver') { openNaverRelay(qp); return; }
+
+  /**
+   * 네이버 지도 앱 호출 (공식 URL Scheme: nmap://place?lat=&lng=&name=&appname=, 앱 설치 필요)
+   * 위도 31.43~44.35, 경도 122.37~132.00 범위만 허용(공식 문서 입력값 범위)
+   */
+  function openNaverRelay(q) {
+    const lat = Number(q.get('lat')), lng = Number(q.get('lng'));
+    const name = (q.get('name') || '음성메모 위치').slice(0, 60);
+    const ok = isFinite(lat) && isFinite(lng) && lat >= 31.43 && lat <= 44.35 && lng >= 122.37 && lng <= 132.0;
+    const appname = location.origin + location.pathname;
+    const nmap = 'nmap://place?lat=' + lat + '&lng=' + lng + '&name=' + encodeURIComponent(name) +
+                 '&appname=' + encodeURIComponent(appname);
+    const gmap = 'https://www.google.com/maps/search/?api=1&query=' + lat + '%2C' + lng;
+
+    document.title = '네이버 지도 열기';
+    const main = document.querySelector('main');
+    main.innerHTML = '';
+    const card = document.createElement('div');
+    card.className = 'card';
+    const h = document.createElement('h2');
+    h.textContent = name;
+    const p = document.createElement('p');
+    p.className = 'meta';
+    card.append(h, p);
+    if (!ok) {
+      p.textContent = '위치 정보가 올바르지 않습니다.';
+    } else {
+      p.textContent = lat.toFixed(6) + ', ' + lng.toFixed(6);
+      const row = document.createElement('div');
+      row.className = 'row';
+      const a1 = document.createElement('a');
+      a1.className = 'small primary'; a1.id = 'naverBtn'; a1.textContent = '네이버 지도 앱 열기'; a1.href = nmap;
+      a1.style.textDecoration = 'none';
+      const a2 = document.createElement('a');
+      a2.className = 'small'; a2.id = 'googleBtn'; a2.textContent = '구글지도로 보기'; a2.href = gmap;
+      a2.style.textDecoration = 'none';
+      row.append(a1, a2);
+      const note = document.createElement('p');
+      note.className = 'hint';
+      note.textContent = '네이버 지도 앱이 설치된 휴대폰에서 열립니다. PC에서는 "구글지도로 보기"를 이용하세요.';
+      card.append(row, note);
+      if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) setTimeout(() => { location.href = nmap; }, 300);
+    }
+    main.append(card);
+  }
+
   // Apps Script 웹앱 URL을 여기에 넣어 두면 각 휴대폰에서 URL 입력을 생략할 수 있습니다(비밀번호는 별도 입력).
   const DEFAULT_SCRIPT_URL = '';
   const MAX_MINUTES = 30;
@@ -447,7 +496,8 @@
       const audio = await blobToBase64(item.blob);
       let data;
       try {
-        data = await callServer(Object.assign({ action: 'memo', mimeType: item.mime, audio }, item.meta), SEND_TIMEOUT_MS);
+        data = await callServer(Object.assign({ action: 'memo', mimeType: item.mime, audio,
+          appUrl: location.origin + location.pathname }, item.meta), SEND_TIMEOUT_MS);
       } catch (e) {
         if (!e.network) throw e;
         data = await waitForResult(item.meta.memoId);
